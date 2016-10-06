@@ -252,6 +252,31 @@ if shorten:
     sound_onset = sound_onset[0:18]
     sound_offset = sound_offset[0:18]
     mic = mic[0:sound_offset[17]+fs_mic]
+# ### beginning user controlled template interfaces
+# changed template_onsets to a list, will have to fix the other calls of it
+
+template = list()
+templ_t = list()
+templ_freq = list()
+templ_timefreq = list()
+template_onsets = list()
+i = 0
+keep_looking = 1
+while keep_looking:
+    i += 1
+    template_temp, templ_t_temp, templ_freq_temp, templ_timefreq_temp = get_temporary_template(i)
+    # user input/ plot spectrogram and mic wavform
+    
+    save_template = raw_input("Enter 1 to save, q to quit looking for templates, anything else to continue: ")
+    if save_template == 1:      
+        template.append(template_temp)
+        templ_t.append(templ_t_temp)
+        templ_freq.append(templ_freq_temp)
+        templ_timefreq.append(templ_timefreq_temp)
+        template_onsets.append(i)
+    elif save_template == q:
+        keep_looking = 0
+        break
     
 # get templates (temporary at this point still)
 template = list()
