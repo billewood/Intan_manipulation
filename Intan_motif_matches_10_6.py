@@ -172,8 +172,8 @@ def get_temporary_template(i = 17):
     template = mic[sound_onset[i]:sound_offset[i]]
     template = template[4800:18000] #shift it, particular to this template
     templ_t, templ_freq, templ_timefreq, templ_rms = spectrogram(template, fs_mic, spec_sample_rate = 1000, freq_spacing = 50)
-    figure()    
     plot_spectrogram(templ_t, templ_freq, templ_timefreq, dBNoise=80, colorbar = False)
+    pause(1)
     return template, templ_t, templ_freq, templ_timefreq
 
 def organize_playbacks(segment, sm, fs_mic = 25000):
@@ -208,6 +208,65 @@ def organize_playbacks(segment, sm, fs_mic = 25000):
             if np.abs(time_diff) < ((((sound_offset[i]-sound_onset[i]) / 2) / fs_mic) + (stim_duration[j] / 2)): # vocalization overlaps with a stimuli
                 sound_playback[i] = j
     return sound_playback
+    
+def plot_spectrogram_bill(t, freq, spec, ax=None, ticks=True, fmin=None, fmax=None, colormap=None, colorbar=True, log = True, dBNoise = 50):
+    
+    if colormap == None:
+        spec_colormap()
+        colormap = plt.get_cmap('SpectroColorMap')
+        
+    if ax is None:
+        ax = plt.gca()
+
+    if fmin is None:
+        fmin = freq.min()
+    if fmax is None:
+        fmax = freq.max()
+
+    ex = (t.min(), t.max(), freq.min(), freq.max())
+    plotSpect = np.abs(spec)
+    
+    
+    if log == True:
+        plotSpect = 20*np.log10(plotSpect)
+        maxB = plotSpect.max()
+        minB = maxB-dBNoise
+    else:
+        maxB = 20*np.log10(plotSpect.max())
+        minB = np.pow((maxB-dBNoise)/20, 10)
+        
+    plotSpect[plotSpect < minB] = minB
+                
+    iax = ax.imshow(plotSpect, aspect='auto', interpolation='nearest', origin='lower', extent=ex, cmap=colormap, vmin=minB, vmax=maxB)
+    plt.ylim(fmin, fmax)
+    if not ticks:
+        ax.set_xticks([])
+        ax.set_yticks([])
+    else:
+        ax.set_ylabel('Frequency (Hz)')
+        ax.set_xlabel('Time (s)')
+
+    if colorbar:
+        plt.colorbar(iax)    
+        
+# Simple mouse click function to store coordinates
+def onclick(event):
+    global ix, iy
+    ix, iy = event.xdata, event.ydata
+
+    # print 'x = %d, y = %d'%(
+    #     ix, iy)
+
+    # assign global variable to access outside of function
+    global coords
+    coords.append((ix, iy))
+
+    # Disconnect after 2 clicks
+    if len(coords) == 2:
+        fig.canvas.mpl_disconnect(cid)
+        plt.close(1)
+    return
+
 ################################################################################################################################
 ###############################################################################################################################
 # Get the neural data
@@ -265,16 +324,25 @@ keep_looking = 1
 while keep_looking:
     i += 1
     template_temp, templ_t_temp, templ_freq_temp, templ_timefreq_temp = get_temporary_template(i)
-    # user input/ plot spectrogram and mic wavform
     
+    # user input/ plot spectrogram and mic wavform
+    save_template = str()
     save_template = raw_input("Enter 1 to save, q to quit looking for templates, anything else to continue: ")
-    if save_template == 1:      
+    
+    if save_template == '1':
+        coords = []
+
+        # Call click func
+        fig = gca()
+        ax = fig.add_subplot(111)
+        cid = fig.canvas.mpl_connect('button_press_event', onclick)
+
         template.append(template_temp)
         templ_t.append(templ_t_temp)
         templ_freq.append(templ_freq_temp)
         templ_timefreq.append(templ_timefreq_temp)
         template_onsets.append(i)
-    elif save_template == q:
+    elif save_template == 'q':
         keep_looking = 0
         break
     
