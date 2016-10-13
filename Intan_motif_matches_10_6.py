@@ -14,6 +14,7 @@ from scipy.stats import zscore
 from scipy.signal import correlate, argrelextrema
 from lasp.hinton import hinton
 from mpl_toolkits.mplot3d import Axes3D
+#import pandas as pd
 # faster plotting
 # %matplotlib notebook  
 
@@ -29,7 +30,7 @@ vb_low = 5 # lowpass for smoothing vocal band
 vb_stds = 1 # num of stds for vocal band threshhold
 vd_stds = 1 # num of stds for vocal density threshold
 vd_win = .25 # in s
-onset_shift = -.3 # in s, move the onset this direction (should be negative usually or 0, to avoid missing some vocalizations)
+onset_shift = 0 # in s, move the onset this direction (should be negative usually or 0, to avoid missing some vocalizations)
 low_freq_corr = 1000 # Hz, lower bound for frequencies to correlate in spectrogram
 high_freq_corr = 10000 # in Hz, " "
 normalize_mic = True # will subtract mean from mic, because our mic often has a dc leak in it. 
@@ -170,58 +171,151 @@ def get_temporary_template(i = 17):
         TODO replace this with real code, like user defined sections of spectrograms
     """
     template = mic[sound_onset[i]:sound_offset[i]]
-    template = template[4800:18000] #shift it, particular to this template
+   # template = template[4800:18000] #shift it, particular to this template
     templ_t, templ_freq, templ_timefreq, templ_rms = spectrogram(template, fs_mic, spec_sample_rate = 1000, freq_spacing = 50)
     plot_spectrogram(templ_t, templ_freq, templ_timefreq, dBNoise=80, colorbar = False)
-    pause(.5)
+    pause(.1)
     return template, templ_t, templ_freq, templ_timefreq
 
-def organize_playbacks(segment, sm, fs_mic = 25000):
-# I stuck this all in 'sound_playback' so I could sort it by time
-# good god this is ugly but i'm moving on for now
+def organize_playbacks(segment, sm, sound_onset, sound_offset, fs_mic = 25000):
+    # TODO why don't I send this function sound_onset and sound_offset????
     """ 
+        Compares times with sound present vs times when playbacks occurred to determine
+        which sounds are actual vocalizations.         
         Returns sound_playback, which = -1 if the sound is not accounted for by 
-        a playback. Only checks for overlap in time, many playbacks may have vocalizations
+        a playback, and an integer corresponding to the playback id otherwise.        
+        Only checks for overlap in time, many playbacks may have vocalizations
         in them that would be discarded and just considered playbacks with this method.
         This is still pretty rough but works for now.
+
+        Also orders the stimuli which were used as sound playback, putting them in 
+        an array 'stimuli', with fields 'duration', 'time', and 'name'.
+        
     """
     stim_time = np.zeros(len(segment.epocharrays))
     stim_duration = np.zeros(len(segment.epocharrays))
-    stimuli_times = list() #used temporarily
-    stim_id = list()
+    #stimuli_times = list() #used temporarily
+ #   stim_id = list()
     stim_name = list()
+    stim_env = list()
     i = 0
     for epoch in segment.epocharrays:
-        stimuli_times.append(epoch.times)
-        stim_id.append(sm.database.get_annotations(epoch.annotations["stim_id"]))
-        stim_name.append(stim_id[i]['callid'])
+     #   stimuli_times.append(epoch.times)
+ #       stim_id.append(sm.database.get_annotations(epoch.annotations["stim_id"]))
+        stim_name.append(sm.database.get_annotations(epoch.annotations["stim_id"])['callid'])
+        sample_rate = sm.database.get_annotations(epoch.annotations["stim_id"])['samplerate']
+        s = sm.reconstruct(epoch.annotations["stim_id"])
+        sound = np.asarray(s).squeeze()
+        sound_env = lowpass_filter(np.abs(sound), float(sample_rate), 250.0)
+        stim_env.append(sound_env)        
+        stim_time[i] = epoch.times #* 1000 # in s
+        stim_duration[i] = epoch.durations # in s
         i = i + 1
+        # to check plotting
+#==============================================================================
+#     figure
+#     hold
+#     plot(stim_env[i])
+#     plot(mic[round(stim_time[i]*fs_mic):round(stim_time[i]*fs_mic+5000)])
+#==============================================================================
 
-    for i in range(len(segment.epocharrays)):
-        stim_time[i] = segment.epocharrays[i].times #* 1000 # in s
-        stim_duration[i] = segment.epocharrays[i].durations # in s
-
-    sound_playback = np.zeros(len(sound_onset)) - 1    
-    for i in range(len(sound_onset)):
-        for j in range(len(stim_time)):
-            time_diff = (((sound_onset[i] + sound_offset[i])/ 2) / fs_mic) - (stim_time[j] + (stim_duration[j] / 2))
-            if np.abs(time_diff) < ((((sound_offset[i]-sound_onset[i]) / 2) / fs_mic) + (stim_duration[j] / 2)): # vocalization overlaps with a stimuli
-                sound_playback[i] = j
-    return sound_playback
+    # sort the stimuli name etc so it's not impossible to work with    
+    sorted_stim_time_idx = sorted(range(len(stim_time)), key=lambda x:stim_time[x]) # iindex of stim_time, as they aren't in order
+    stim_env = [stim_env[i] for i in sorted_stim_time_idx]    # organize stim_env in order of when stim_time happened
+    stimuli = list()            
+    dtype = [('time', float), ('duration', float), ('name','S10')]
+    for i in range(len(stim_time)):
+        stimuli.append((stim_time[i], stim_duration[i], stim_name[i]))
+    stimuli = np.array(stimuli, dtype = dtype)    
+    stimuli = np.sort(stimuli, order = ['time']) 
     
+        # To figure out, roughly, which sounds are due to stimuli
+    sound_playback = np.zeros(len(sound_onset), dtype = np.int) - 1
+    for i in range(len(sound_onset)):
+        for j in range(len(stimuli)):
+            time_diff = (((sound_onset[i] + sound_offset[i])/ 2) / fs_mic) - (stimuli['time'][j] + (stimuli['duration'][j] / 2))
+            if np.abs(time_diff) < ((((sound_offset[i]-sound_onset[i]) / 2) / fs_mic) + (stimuli['duration'][j] / 2)): # vocalization overlaps with a stimuli
+                sound_playback[i] = j
+                
+    return stimuli, stim_env, sound_playback 
+        
 def onclick(event):
     global ix, iy
     ix, iy = event.xdata, event.ydata
     print 'x = %.3f, y = %.1f'%(
         ix, iy)
-
     global coords
     coords.append((ix, iy))
-
     if len(coords) == 2:
         spect_figure.canvas.mpl_disconnect(cid)
-
     return coords
+
+def plot_stim_and_mic(onsets_to_plot,sound_playback, stimuli, sound_onset, sound_offset, close_fig = 1):
+    "Pass an index corresponding to sound_onset"
+    for j in range(len(onsets_to_plot)):
+        i = onsets_to_plot[j]
+        sp_stim = figure('sound pressure of stimuli, if present, sound onset = %s' %i)
+        hold
+        if sound_playback[i] > -1:
+            stim_start = round(stimuli['time'][sound_playback[i]]*fs_mic)
+            offset = stim_start - sound_onset[i]
+            plot(stim_env[sound_playback[i]],'r')
+            plot(mic[stim_start:stim_start+50000],'r')
+        else:
+            offset = 0
+        pause(.1)
+        plot(mic[sound_onset[i] + offset:sound_offset[i] + offset],'b')
+        pause(1)
+        if close_fig:
+            close(sp_stim) 
+        
+def user_select_templates(stim_env, stim_time, mic):
+    """ 
+        Displays a series of spectrograms based on sound_onset (this is not adaptable yet), 
+        askign the user which ones to use as templates and then asks the user to select the 
+        area of interest.
+    """  
+    template = list()
+    templ_t = list()
+    templ_freq = list()
+    templ_timefreq = list()
+    template_onsets = list()
+    i = 0
+    keep_looking = 1
+    while keep_looking:
+        i += 1
+        plot_stim_and_mic([i], sound_playback, stimuli, sound_onset, sound_offset, close_fig = 0)
+#==============================================================================
+#         sp_stim = figure('sound pressure of stimuli, if present')
+#         hold
+#         plot(stim_env[i])
+#         plot(mic[round(stim_time[i]*25000):round(stim_time[i]*25000+5000)])
+#         plot(mic[sound_onset[i]:sound_offset[i]])        
+#==============================================================================
+        spect_figure = figure('spectogram')
+        spect_figure.add_subplot(111)      
+        template_temp, templ_t_temp, templ_freq_temp, templ_timefreq_temp = get_temporary_template(i)   
+        # user input/ plot spectrogram and mic wavform
+        save_template = str()
+        save_template = raw_input("Enter 1 to save, q to quit looking for templates, anything else to continue: ")  
+        if save_template == '1':
+            coords = []
+            print("Click around template of interest")
+            template_fig = figure('spectogram')
+            show(template_fig)
+            # Call click func
+            cid = spect_figure.canvas.mpl_connect('button_press_event', onclick)
+            waitforbuttonpress()
+            waitforbuttonpress()     
+            template.append(template_temp)
+            templ_t.append(templ_t_temp)
+            templ_freq.append(templ_freq_temp)
+            templ_timefreq.append(templ_timefreq_temp)
+            template_onsets.append(i)
+        elif save_template == 'q':
+            keep_looking = 0
+            break   
+    return template, template_onsets, templ_t, templ_freq, templ_timefreq       
 ################################################################################################################################
 ###############################################################################################################################
 # Get the neural data
@@ -239,14 +333,6 @@ sm = sound_manager.SoundManager(HDF5Store, stimulus_h5_filename) # make a sound 
 # TODO organizing stimulus times to validate against periods of vocalization
 segment = block.segments[0] # The block only has one segment
 num_stimuli = len(segment.epocharrays)
-#   how to access times of stimuli (because it's hard to figure out):
-# segment.epocharrays[0].times
-# segment.epocharrays[0].durations  # durations of stimuli
-#   and how to use the sound manager object:
-# sm.database.get_annotations(epoch.annotations["stim_id"])["callid"]
-#   and use time slice:
-# mic_slice = mic.time_slice(epoch.times-tbefore, epoch.times + epoch.durations + tafter)
-
 # pull the microphone channel, filter it etc
 mic = [asig for asig in block.segments[0].analogsignalarrays if asig.name == "Board ADC"][0] # This is the entire microphone recording
 fs_mic = np.int(mic.sampling_rate)
@@ -260,63 +346,30 @@ vocal_band = np.abs(vocal_band)
 vocal_band = lowpass_filter(vocal_band, fs_mic, vb_low)
 
 # find periods of sound on the mic channel that is likely vocalizations
-# sound_onset is in data points, not time
+ # sound_onset is in data points, not time
 sound_onset, sound_offset = find_vocal_periods(vocal_band, vb_stds, vd_stds, vd_win, fs_mic, onset_shift)
 if shorten:
     sound_onset = sound_onset[0:18]
     sound_offset = sound_offset[0:18]
     mic = mic[0:sound_offset[17]+fs_mic]
-# ### beginning user controlled template interfaces
-# changed template_onsets to a list, will have to fix the other calls of it
+    
+# Now let's identify which vocalizations are actually playbacks!!!
+# first i need stimuli in a format i can use, so make a sortable array, 'stimuli', 
+# containing the time of the stimuli ('time'), duration 'duration' and 'name'.
+# It is sorted in order of time. stim_env is a list of all the amplitude envelopes, sorted as stimuli is.
+# 'sound_playback' stores whether a given vocalization (sound_onset) corresponds to a playback or not.
+# sound_playback = -1 if no playback matches the time of vocalization, and returns
+# the index of stimuli otherwise. 
+# thus if sound_playback[1] = 10, stim_env[10] corresponds to sound_playback[1]
+stimuli, stim_env, sound_playback = organize_playbacks(segment, sm, sound_onset, sound_offset, fs_mic)
 
-template = list()
-templ_t = list()
-templ_freq = list()
-templ_timefreq = list()
-template_onsets = list()
-i = 0
-keep_looking = 1
-while keep_looking:
-    i += 1
-    spect_figure = figure('spectogram')
-    spect_figure.add_subplot(111)
+# thus:
+onsets_to_plot = [18,19,20] # pick some onsets to plot
+plot_stim_and_mic(onsets_to_plot, sound_playback, stimuli, sound_onset, sound_offset) # plot them aligned with stimuli, if present
     
-    template_temp, templ_t_temp, templ_freq_temp, templ_timefreq_temp = get_temporary_template(i)   
-    # user input/ plot spectrogram and mic wavform
-    save_template = str()
-    save_template = raw_input("Enter 1 to save, q to quit looking for templates, anything else to continue: ")
-    
-    if save_template == '1':
-        coords = []
-        print("Click around template of interest")
-        figure('spectogram')
-        show()
-        # Call click func
-        cid = spect_figure.canvas.mpl_connect('button_press_event', onclick)
-        waitforbuttonpress()
-        waitforbuttonpress()     
-        template.append(template_temp)
-        templ_t.append(templ_t_temp)
-        templ_freq.append(templ_freq_temp)
-        templ_timefreq.append(templ_timefreq_temp)
-        template_onsets.append(i)
-    elif save_template == 'q':
-        keep_looking = 0
-        break
-    
-# get templates (temporary at this point still)
-template = list()
-templ_t = list()
-templ_freq = list()
-templ_timefreq = list()
-template_onsets = [17, 2]
-for i in template_onsets:
-    template_temp, templ_t_temp, templ_freq_temp, templ_timefreq_temp = get_temporary_template(i)
-    template.append(template_temp)
-    templ_t.append(templ_t_temp)
-    templ_freq.append(templ_freq_temp)
-    templ_timefreq.append(templ_timefreq_temp)
-#==============================================================================
+# ### beginning user controlled template interfaces
+template, template_onsets, templ_t, templ_freq, templ_timefreq = user_select_templates(stim_env, stim_time, mic)
+
 
 # # find the frequencies of interest and then z-score the templates
 #==============================================================================
@@ -387,22 +440,8 @@ for i in range(len(template_corr)):
 
 # plot the mean correlations between the first two templates and each vocalization
 plot(mean_corrs[0], mean_corrs[1],'o')    
-
 # plot the max correlations between each template and each vocalization, seems best
 plot(max_corrs[0], max_corrs[1],'o')    
-
-
-#   how to access times of stimuli (because it's hard to figure out):
-# segment.epocharrays[0].times
-# segment.epocharrays[0].durations  # durations of stimuli
-#   and how to use the sound manager object:
-# sm.database.get_annotations(epoch.annotations["stim_id"])["callid"]
-#   and use time slice:
-# mic_slice = mic.time_slice(epoch.times-tbefore, epoch.times + epoch.durations + tafter)    
-
-# Now let's identify which vocalizations are actually playbacks!!!
-# first i need stimuli in a format i can use: playbacks = -1 if it's not a playback
-sound_playback = organize_playbacks(segment, sm, fs_mic)
 
 # find max_corrs of second template (thuck) that are both very large and are not playbacks
 # this is very particular to the grant but the idea is generalizable
@@ -454,11 +493,7 @@ for i in range(len(syllables)):
 
 
     
-# sort the stimuli name etc so it's not impossible to work with    
-playbacks = list()            
-dtype = [('time', float), ('duration', float), ('name','S10')]
-for i in range(len(stim_time)):
-    playbacks.append((stim_time[i], stim_duration[i], stim_name[i]))
+
 #==============================================================================
 #     sound_data = sm.database.get_annotations(epoch.annotations["stim_id"])
 #         print 'Epoch:', i, 'Trial:', epoch.annotations['trial'], 'Stim:', sound_data['callid'], sound_data['emitter'],\
@@ -497,6 +532,21 @@ for isound_onset in range(3):
 
 sound_env = lowpass_filter(np.abs(sound), float(sample_rate), 250.0)
 
+
+# get templates (old hard-wired style)
+#==============================================================================
+# template = list()
+# templ_t = list()
+# templ_freq = list()
+# templ_timefreq = list()
+# template_onsets = [17, 2]
+# for i in template_onsets:
+#     template_temp, templ_t_temp, templ_freq_temp, templ_timefreq_temp = get_temporary_template(i)
+#     template.append(template_temp)
+#     templ_t.append(templ_t_temp)
+#     templ_freq.append(templ_freq_temp)
+#     templ_timefreq.append(templ_timefreq_temp)
+#==============================================================================
 
 
 #3d figure but needs to be updated for new lists of templates
