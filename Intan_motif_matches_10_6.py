@@ -27,7 +27,7 @@ figures_dir = os.path.join(experiment_dir, "Figures")
 low_power = 2000
 high_power = 5000
 vb_low = 5 # lowpass for smoothing vocal band 
-vb_stds = 1 # num of stds for vocal band threshhold
+vb_stds = .75 # num of stds for vocal band threshhold
 vd_stds = 1 # num of stds for vocal density threshold
 vd_win = .25 # in s
 onset_shift = 0 # in s, move the onset this direction (should be negative usually or 0, to avoid missing some vocalizations)
@@ -164,7 +164,7 @@ def get_spect_corr(sound_wav, templ_timefreq, freq_index, fs_mic = 25000, spec_s
     return spect_corr/np.sqrt(spect_auto1*spect_auto2)  
 # plot_spectrogram(t, freq, timefreq, dBNoise=80, colorbar = False)
 
-def get_temporary_template(i = 17):
+def get_temporary_template(sound_onset, sound_offset, fs_mic, i = 17):
     """
         Returns a spectrogram and a template, if i = 17 it's some sort of song
         Really just a placeholder for a better template algorithm
@@ -250,30 +250,46 @@ def onclick(event):
         spect_figure.canvas.mpl_disconnect(cid)
     return coords
 
-def plot_stim_and_mic(onsets_to_plot,sound_playback, stimuli, sound_onset, sound_offset, close_fig = 1):
+def plot_stim_and_mic(onsets_to_plot,sound_playback, stimuli, sound_onset, sound_offset, close_fig = 1, pause_time = .1):
     "Pass an index corresponding to sound_onset"
-    for j in range(len(onsets_to_plot)):
-        i = onsets_to_plot[j]
-        sp_stim = figure('sound pressure of stimuli, if present, sound onset = %s' %i)
+    for onset in onsets_to_plot:
+        if 'sp_stim' in globals():
+            close(sp_stim)
+        sp_stim_fig = figure('sound pressure of stimuli, if present, sound onset = %s' %onset)
         hold
-        if sound_playback[i] > -1:
-            stim_start = round(stimuli['time'][sound_playback[i]]*fs_mic)
-            offset = stim_start - sound_onset[i]
-            plot(stim_env[sound_playback[i]],'r')
-            plot(mic[stim_start:stim_start+50000],'r')
+        offset = 0
+        if sound_playback[onset] > -1: # if there is a stimulus
+            stim_start = round(stimuli['time'][sound_playback[onset]]*fs_mic)
+            offset = stim_start - sound_onset[onset] # align stimulus and sound_onset
+            plot(stim_env[sound_playback[onset]],'r')
+#            plot(mic[stim_start:stim_start+50000],'r')
+            if len(stim_env[sound_playback[onset]]) > (sound_offset[onset] - sound_onset[onset]): # check if stimulus somehow goes past sound_offset
+                sound_end = sound_onset[onset] + offset + len(stim_env[sound_playback[onset]])
+                print('Warning, stimulus extends past sound_offset for trial %s' %onset)
+            else:
+                sound_end = sound_offset[onset] + offset
         else:
+            sound_end = sound_offset[onset]  
             offset = 0
         pause(.1)
-        plot(mic[sound_onset[i] + offset:sound_offset[i] + offset],'b')
-        pause(1)
+     
+        plot(mic[sound_onset[onset] + offset:sound_end],'b')
+        pause(pause_time)
         if close_fig:
-            close(sp_stim) 
+            close(sp_stim_fig) 
         
-def user_select_templates(stim_env, stim_time, mic):
+def user_select_templates(stim_env, stimuli, mic, sound_onset, sound_offset, fs_mic):
     """ 
         Displays a series of spectrograms based on sound_onset (this is not adaptable yet), 
-        askign the user which ones to use as templates and then asks the user to select the 
+        asking the user which ones to use as templates and then asks the user to select the 
         area of interest.
+        Returns lists of template associated vars:
+            template = list()
+            templ_t = list()
+            templ_freq = list()
+            templ_timefreq = list()
+            template_onsets = list()
+        
     """  
     template = list()
     templ_t = list()
@@ -284,26 +300,17 @@ def user_select_templates(stim_env, stim_time, mic):
     keep_looking = 1
     while keep_looking:
         i += 1
-        plot_stim_and_mic([i], sound_playback, stimuli, sound_onset, sound_offset, close_fig = 0)
 #==============================================================================
-#         sp_stim = figure('sound pressure of stimuli, if present')
-#         hold
-#         plot(stim_env[i])
-#         plot(mic[round(stim_time[i]*25000):round(stim_time[i]*25000+5000)])
-#         plot(mic[sound_onset[i]:sound_offset[i]])        
-#==============================================================================
-        spect_figure = figure('spectogram')
-        spect_figure.add_subplot(111)      
-        template_temp, templ_t_temp, templ_freq_temp, templ_timefreq_temp = get_temporary_template(i)   
-        # user input/ plot spectrogram and mic wavform
+        plot_stim_and_mic([i], sound_playback, stimuli, sound_onset, sound_offset, close_fig = 1, pause_time = 1) # plot a figure of stimulus and amp wav to help user
+        spect_figure = figure('spectogram') #this figure will be used to define the template
+       # spect_figure.add_subplot(111)      # appears unnecessary, delete eventually
+        template_temp, templ_t_temp, templ_freq_temp, templ_timefreq_temp = get_temporary_template(sound_onset, sound_offset, fs_mic, i) #plot spectrogram on the figure 
         save_template = str()
         save_template = raw_input("Enter 1 to save, q to quit looking for templates, anything else to continue: ")  
         if save_template == '1':
             coords = []
             print("Click around template of interest")
-            template_fig = figure('spectogram')
-            show(template_fig)
-            # Call click func
+           # show(spect_figure) # this breaks the onclick stuff, so I can't seem to bring the figure to the forefront
             cid = spect_figure.canvas.mpl_connect('button_press_event', onclick)
             waitforbuttonpress()
             waitforbuttonpress()     
@@ -316,6 +323,8 @@ def user_select_templates(stim_env, stim_time, mic):
             keep_looking = 0
             break   
     return template, template_onsets, templ_t, templ_freq, templ_timefreq       
+    
+
 ################################################################################################################################
 ###############################################################################################################################
 # Get the neural data
@@ -368,7 +377,7 @@ onsets_to_plot = [18,19,20] # pick some onsets to plot
 plot_stim_and_mic(onsets_to_plot, sound_playback, stimuli, sound_onset, sound_offset) # plot them aligned with stimuli, if present
     
 # ### beginning user controlled template interfaces
-template, template_onsets, templ_t, templ_freq, templ_timefreq = user_select_templates(stim_env, stim_time, mic)
+template, template_onsets, templ_t, templ_freq, templ_timefreq = user_select_templates(stim_env, stimuli, mic, sound_onset, sound_offset, fs_mic)
 
 
 # # find the frequencies of interest and then z-score the templates
